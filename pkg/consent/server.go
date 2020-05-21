@@ -98,22 +98,15 @@ func newTemplates() *templates {
 	}
 }
 
-// Server handler summary for oauth 2.0 flow
-// type Server interface {
-// 	LoginHandler(w http.ResponseWriter, r *http.Request)
-// 	ConsentHandler(w http.ResponseWriter, r *http.Request)
-// 	HomePageHandler(w http.ResponseWriter, r *http.Request)
-// 	RedirectHandler(w http.ResponseWriter, r *http.Request)
-// }
-
-type server struct {
-	h            *hClient.OryHydra
-	t            *templates
+type Server struct {
+	hydra     *hClient.OryHydra
+	templates *templates
+	// oauth2Client *models.OAuth2Client
 	oauth2Config *oauth2.Config
 }
 
 // NewServer get new login/consent server
-func NewServer() server {
+func NewServer() *Server {
 	cfg := &hClient.TransportConfig{
 		Host:     host,
 		Schemes:  []string{scheme},
@@ -131,18 +124,30 @@ func NewServer() server {
 		RedirectURL: redirectURL,
 	}
 
-	return server{
-		h:            hClient.NewHTTPClientWithConfig(nil, cfg),
-		t:            newTemplates(),
+	hydra := hClient.NewHTTPClientWithConfig(nil, cfg)
+	// check client is exist. if not register a oauth 2 client to the authorization server
+	// getOAuth2ClientResp, err := hydra.Admin.GetOAuth2Client(&admin.GetOAuth2ClientParams{
+	// 	ID:      "abc",
+	// 	Context: context.Background(),
+	// })
+	// if err != nil {
+	// 	return Server{}, err
+	// }
+
+	// log.Println(getOAuth2ClientResp)
+
+	return &Server{
+		hydra:        hydra,
+		templates:    newTemplates(),
 		oauth2Config: oConfig,
 	}
 }
 
-func (s *server) LoginHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Server) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("LoginHandler...")
 	challengeID := r.URL.Query().Get("login_challenge")
 	if r.Method == http.MethodGet {
-		if err := s.t.login.Execute(w, challengeID); err != nil {
+		if err := s.templates.login.Execute(w, challengeID); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 		return
@@ -161,7 +166,7 @@ func (s *server) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	loginReq, err := s.h.Admin.GetLoginRequest(&admin.GetLoginRequestParams{
+	loginReq, err := s.hydra.Admin.GetLoginRequest(&admin.GetLoginRequestParams{
 		LoginChallenge: challengeID,
 		Context:        context.Background(),
 	})
@@ -173,7 +178,7 @@ func (s *server) LoginHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Println(loginReq)
 
-	acceptLoginRsp, err := s.h.Admin.AcceptLoginRequest(&admin.AcceptLoginRequestParams{
+	acceptLoginRsp, err := s.hydra.Admin.AcceptLoginRequest(&admin.AcceptLoginRequestParams{
 		LoginChallenge: loginReq.Payload.Challenge,
 		Body: &models.AcceptLoginRequest{
 			Subject: &userName,
@@ -188,11 +193,11 @@ func (s *server) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, acceptLoginRsp.Payload.RedirectTo, http.StatusFound)
 }
 
-func (s *server) ConsentHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Server) ConsentHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("ConsentHandler...")
 	challengeID := r.URL.Query().Get("consent_challenge")
 	if r.Method == http.MethodGet {
-		consentReq, err := s.h.Admin.GetConsentRequest(&admin.GetConsentRequestParams{
+		consentReq, err := s.hydra.Admin.GetConsentRequest(&admin.GetConsentRequestParams{
 			ConsentChallenge: challengeID,
 			Context:          context.Background(),
 		})
@@ -207,13 +212,13 @@ func (s *server) ConsentHandler(w http.ResponseWriter, r *http.Request) {
 			"requestedScopes":   consentReq.Payload.RequestedScope,
 		}
 
-		if err := s.t.consent.Execute(w, tplData); err != nil {
+		if err := s.templates.consent.Execute(w, tplData); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 		return
 	}
 
-	acceptConsentResp, err := s.h.Admin.AcceptConsentRequest(&admin.AcceptConsentRequestParams{
+	acceptConsentResp, err := s.hydra.Admin.AcceptConsentRequest(&admin.AcceptConsentRequestParams{
 		ConsentChallenge: challengeID,
 		Body: &models.AcceptConsentRequest{
 			GrantScope: []string{"offline_access", "offline", "openid"},
@@ -229,7 +234,7 @@ func (s *server) ConsentHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, acceptConsentResp.Payload.RedirectTo, http.StatusFound)
 }
 
-func (s *server) HomePageHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Server) HomePageHandler(w http.ResponseWriter, r *http.Request) {
 	state, err := randx.RuneSequence(24, randx.AlphaLower)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -238,12 +243,12 @@ func (s *server) HomePageHandler(w http.ResponseWriter, r *http.Request) {
 
 	authURL := s.oauth2Config.AuthCodeURL(string(state))
 	log.Println(authURL)
-	if err := s.t.home.Execute(w, authURL); err != nil {
+	if err := s.templates.home.Execute(w, authURL); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 }
 
-func (s *server) RedirectHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Server) RedirectHandler(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	oauthConf := clientcredentials.Config{
 		ClientID:     clientID,
@@ -269,7 +274,7 @@ func (s *server) RedirectHandler(w http.ResponseWriter, r *http.Request) {
 		"expiry":       token.Expiry,
 		"idtoken":      token.Extra("id_token"),
 	}
-	if err := s.t.redirect.Execute(w, data); err != nil {
+	if err := s.templates.redirect.Execute(w, data); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 }
