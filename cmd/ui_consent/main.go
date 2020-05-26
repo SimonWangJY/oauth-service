@@ -3,15 +3,16 @@ package main
 import (
 	"log"
 	"net/http"
-	"oauth-service/pkg/consent"
+	uiconsent "oauth-service/pkg/consent/ui_consent"
 
 	"github.com/gorilla/mux"
 )
 
 func main() {
-	s := consent.NewServer()
+	s := uiconsent.NewServer()
 	r := mux.NewRouter()
 
+	// endpoint with UI page
 	r.HandleFunc("/consent", s.ConsentHandler)
 	r.HandleFunc("/login", s.LoginHandler)
 	r.HandleFunc("/callback", s.RedirectHandler)

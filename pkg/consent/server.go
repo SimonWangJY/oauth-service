@@ -1,11 +1,14 @@
+// Package consent used to get the oauth token  from backend
 package consent
 
 import (
 	"context"
-	"html/template"
+	"encoding/json"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
+	"time"
 
 	hClient "github.com/ory/hydra-client-go/client"
 	"github.com/ory/hydra-client-go/client/admin"
@@ -16,7 +19,7 @@ import (
 )
 
 const (
-	host     = "localhost:4445"
+	host     = "127.0.0.1:4445"
 	basePath = "/"
 	scheme   = "http"
 )
@@ -29,79 +32,30 @@ const (
 	redirectURL         = "http://127.0.0.1:9091/callback"
 )
 
+const (
+	subjectName = "Username"
+)
+
 var (
 	scopes []string = []string{"openid", "offline"}
 )
 
-type templates struct {
-	login    *template.Template
-	consent  *template.Template
-	home     *template.Template
-	redirect *template.Template
+// LoginRequest user login request
+type LoginRequest struct {
+	UserName string `json:"userName"`
+	Password string `json:"password"`
 }
 
-func newTemplates() *templates {
-	loginTpls := template.Must(template.New("").Parse(`<html>
-	<body>
-	<h1>Please sign in to proceed.</h1>
-	<form action="/login?login_challenge={{.}}" method="POST">
-	  <input name="username" type="text" />
-	  <input name="password" type="password" /> 
-	  <input type="submit" />
-	  <table style="">
-	  </table>
-	</form>
-	<p>To sign in, use the credentials "simon:test"</p>
-	</body>
-	</html>`))
-
-	consentTpls := template.Must(template.New("").Parse(`<html>
-	<body>
-    <h1>The application wants access to:</h1>
-    <form action="/consent?consent_challenge={{.consent_challenge}}" method="POST">
-        <ul>
-            {{range .requestedScopes}}
-                <li><input type="checkbox" name="{{.}}">{{.}}</li>
-            {{end}}
-        </ul>
-        <input type="submit">
-    </form>
-	</body>
-	</html>`))
-
-	homePageTpls := template.Must(template.New("").Parse(`<html>
-	<body>
-	<h1>Ory Hydra Login Login Test</h1>
-	<p>To initiate the flow, click the "Authorize Application" button.</p>
-	<p><a href="{{ . }}">Authorize application</a></p>
-	</body>
-	</html>`))
-
-	redirectTpls := template.Must(template.New("").Parse(`<html>
-	<html>
-	<head></head>
-	<body>
-	<ul>
-		<li>Access Token: <code>{{ .accessToken }}</code></li>
-		<li>Refresh Token: <code>{{ .refreshToken }}</code></li>
-		<li>Expires in: <code>{{ .expiry }}</code></li>
-		<li>ID Token: <code>{{ .idtoken }}</code></li>
-	</ul>
-	</body>
-	</html>`))
-
-	return &templates{
-		login:    loginTpls,
-		consent:  consentTpls,
-		home:     homePageTpls,
-		redirect: redirectTpls,
-	}
+// LoginResponse user login response
+type LoginResponse struct {
+	AccessToken  string    `json:"accessToken"`
+	RefreshToken string    `json:"refreshToken"`
+	Expiry       time.Time `json:"expiry"`
+	IDToken      string    `json:"idToken"`
 }
 
 type Server struct {
-	hydra     *hClient.OryHydra
-	templates *templates
-	// oauth2Client *models.OAuth2Client
+	hydra        *hClient.OryHydra
 	oauth2Config *oauth2.Config
 }
 
@@ -125,61 +79,30 @@ func NewServer() *Server {
 	}
 
 	hydra := hClient.NewHTTPClientWithConfig(nil, cfg)
-	// check client is exist. if not register a oauth 2 client to the authorization server
-	// getOAuth2ClientResp, err := hydra.Admin.GetOAuth2Client(&admin.GetOAuth2ClientParams{
-	// 	ID:      "abc",
-	// 	Context: context.Background(),
-	// })
-	// if err != nil {
-	// 	return Server{}, err
-	// }
-
-	// log.Println(getOAuth2ClientResp)
 
 	return &Server{
 		hydra:        hydra,
-		templates:    newTemplates(),
 		oauth2Config: oConfig,
 	}
 }
 
-func (s *Server) LoginHandler(w http.ResponseWriter, r *http.Request) {
+func (s *Server) HydraLoginProviderHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("LoginHandler...")
+
+	userName := r.Header.Get(subjectName)
+	if len(userName) == 0 {
+		http.Error(w, "user name cannot be empty", http.StatusBadRequest)
+		return
+	}
+
 	challengeID := r.URL.Query().Get("login_challenge")
-	if r.Method == http.MethodGet {
-		if err := s.templates.login.Execute(w, challengeID); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		}
+	if len(challengeID) == 0 {
+		http.Error(w, "missing challenge ID", http.StatusBadRequest)
 		return
 	}
-
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	userName := r.Form.Get("username")
-	password := r.Form.Get("password")
-
-	if userName != "simon" || password != "test" {
-		http.Error(w, "provided credentials are wrong, try simon:test", http.StatusBadRequest)
-		return
-	}
-
-	loginReq, err := s.hydra.Admin.GetLoginRequest(&admin.GetLoginRequestParams{
-		LoginChallenge: challengeID,
-		Context:        context.Background(),
-	})
-	if err != nil {
-		log.Println(err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	log.Println(loginReq)
 
 	acceptLoginRsp, err := s.hydra.Admin.AcceptLoginRequest(&admin.AcceptLoginRequestParams{
-		LoginChallenge: loginReq.Payload.Challenge,
+		LoginChallenge: challengeID,
 		Body: &models.AcceptLoginRequest{
 			Subject: &userName,
 		},
@@ -193,30 +116,10 @@ func (s *Server) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, acceptLoginRsp.Payload.RedirectTo, http.StatusFound)
 }
 
-func (s *Server) ConsentHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("ConsentHandler...")
+func (s *Server) HydraConsentProviderHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("ConsentProviderHandler...")
+
 	challengeID := r.URL.Query().Get("consent_challenge")
-	if r.Method == http.MethodGet {
-		consentReq, err := s.hydra.Admin.GetConsentRequest(&admin.GetConsentRequestParams{
-			ConsentChallenge: challengeID,
-			Context:          context.Background(),
-		})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		log.Println("consent request", consentReq)
-
-		tplData := map[string]interface{}{
-			"consent_challenge": challengeID,
-			"requestedScopes":   consentReq.Payload.RequestedScope,
-		}
-
-		if err := s.templates.consent.Execute(w, tplData); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		}
-		return
-	}
 
 	acceptConsentResp, err := s.hydra.Admin.AcceptConsentRequest(&admin.AcceptConsentRequestParams{
 		ConsentChallenge: challengeID,
@@ -229,26 +132,13 @@ func (s *Server) ConsentHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	log.Println("accept consent response", acceptConsentResp)
 
 	http.Redirect(w, r, acceptConsentResp.Payload.RedirectTo, http.StatusFound)
 }
 
-func (s *Server) HomePageHandler(w http.ResponseWriter, r *http.Request) {
-	state, err := randx.RuneSequence(24, randx.AlphaLower)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+func (s *Server) HydraRedirectHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("HydraRedirectHandler...")
 
-	authURL := s.oauth2Config.AuthCodeURL(string(state))
-	log.Println(authURL)
-	if err := s.templates.home.Execute(w, authURL); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-	}
-}
-
-func (s *Server) RedirectHandler(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	oauthConf := clientcredentials.Config{
 		ClientID:     clientID,
@@ -268,13 +158,58 @@ func (s *Server) RedirectHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := map[string]interface{}{
-		"accessToken":  token.AccessToken,
-		"refreshToken": token.RefreshToken,
-		"expiry":       token.Expiry,
-		"idtoken":      token.Extra("id_token"),
+	loginResp := LoginResponse{
+		AccessToken:  token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		Expiry:       token.Expiry,
+		IDToken:      token.Extra("id_token").(string),
 	}
-	if err := s.templates.redirect.Execute(w, data); err != nil {
+
+	loginRespBytes, err := json.Marshal(loginResp)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
+
+	w.Write(loginRespBytes)
+}
+
+func (s *Server) GetTokenHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("GetTokenHandler...")
+
+	bodyBytes, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var loginReq LoginRequest
+	if err := json.Unmarshal(bodyBytes, &loginReq); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// the reason to include user name into header is because we need to input user name as
+	// subject in login provider.
+	userName := r.Header.Get(subjectName)
+	if len(userName) == 0 || userName != loginReq.UserName {
+		http.Error(w, "user name must be included in header", http.StatusBadRequest)
+		return
+	}
+
+	// login credential validation
+	if loginReq.UserName != "simon" || loginReq.Password != "test" {
+		http.Error(w, "user login info incorrect", http.StatusBadRequest)
+		return
+	}
+
+	state, err := randx.RuneSequence(24, randx.AlphaLower)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	authURL := s.oauth2Config.AuthCodeURL(string(state))
+	http.Redirect(w, r, authURL, http.StatusFound)
+	return
 }
