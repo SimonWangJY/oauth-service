@@ -4,6 +4,7 @@ package consent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -210,6 +211,7 @@ func (s *Server) GetTokenHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	authURL := s.oauth2Config.AuthCodeURL(string(state))
+	fmt.Println(authURL)
 	http.Redirect(w, r, authURL, http.StatusFound)
 	return
 }

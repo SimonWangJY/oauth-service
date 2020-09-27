@@ -2,6 +2,7 @@ package uiconsent
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -120,6 +121,7 @@ func (s *Server) LoginHandler(w http.ResponseWriter, r *http.Request) {
 		},
 		Context: context.Background(),
 	})
+	fmt.Println(acceptLoginRsp.Payload)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -157,7 +159,7 @@ func (s *Server) ConsentHandler(w http.ResponseWriter, r *http.Request) {
 	acceptConsentResp, err := s.hydra.Admin.AcceptConsentRequest(&admin.AcceptConsentRequestParams{
 		ConsentChallenge: challengeID,
 		Body: &models.AcceptConsentRequest{
-			GrantScope: []string{"offline_access", "offline", "openid"},
+			GrantScope: scopes,
 		},
 		Context: context.Background(),
 	})
@@ -191,7 +193,7 @@ func (s *Server) RedirectHandler(w http.ResponseWriter, r *http.Request) {
 		TokenURL:     oAuthPublicTokenURL,
 		Scopes:       scopes,
 		EndpointParams: url.Values{
-			"grant_type":   {"authorization_code"},
+			"grant_type":   {"authorization_code", "refresh_token"},
 			"redirect_uri": {redirectURL},
 			"client_id":    {clientID},
 			"code":         {code}},
